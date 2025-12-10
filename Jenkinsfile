@@ -12,7 +12,7 @@ pipeline {
       steps {
         checkout([
           $class: 'GitSCM',
-          branches: [[name: '*/PersonalVault']],
+          branches: [[name: '*/main']],   // UPDATED BRANCH
           userRemoteConfigs: [[
             url: 'https://github.com/RequiemxOP/performance-tests.git',
             credentialsId: 'github-https-token'
@@ -24,17 +24,17 @@ pipeline {
     stage('Detect Latest JMX') {
       steps {
         script {
-          // Detect vault folder that has a JMX file
-          LATEST_JMX = sh(
-            script: "ls -1t Vaults/*/*.jmx | head -n 1",
+          def found = sh(
+            script: "ls -1t Vaults/*/*.jmx 2>/dev/null | head -n 1",
             returnStdout: true
           ).trim()
 
-          if (!LATEST_JMX) {
+          if (!found) {
             error "No JMX found in Vaults/*/"
           }
 
-          VAULT = LATEST_JMX.split('/')[1]
+          LATEST_JMX = found
+          VAULT = found.split('/')[1]
 
           echo "Detected vault: ${VAULT}"
           echo "JMX: ${LATEST_JMX}"
@@ -49,10 +49,14 @@ pipeline {
       steps {
         script {
           def ts = sh(script: "date +%Y%m%d-%H%M%S", returnStdout: true).trim()
-          VAULT = readFile("vault.txt").trim()
+          def vault = readFile("vault.txt").trim()
 
-          RUN_DIR = "${BASE_RESULTS}/${VAULT}/${BUILD_NUMBER}-${ts}"
+          RUN_DIR = "${BASE_RESULTS}/${vault}/${BUILD_NUMBER}-${ts}"
           sh "mkdir -p '${RUN_DIR}'"
+
+          // Copy files into run directory
+          sh "cp -r data '${RUN_DIR}/data'"
+          sh "cp '${LATEST_JMX}' '${RUN_DIR}/testplan.jmx'"
 
           writeFile file: "run_dir.txt", text: RUN_DIR
         }
@@ -63,14 +67,15 @@ pipeline {
       steps {
         sh '''
         set -eu
+        RUN_DIR=$(cat run_dir.txt)
+        JMX="${RUN_DIR}/testplan.jmx"
 
-        JMX=$(cat latest_jmx.txt)
-
-        # Normalize paths
+        # Normalize Windows paths
         sed -i 's#\\\\#/#g' "$JMX"
         sed -i 's#[A-Za-z]:/##g' "$JMX"
 
-        for f in data/*; do
+        # Fix CSV references
+        for f in ${RUN_DIR}/data/*; do
           name=$(basename "$f")
           sed -i -E "s#[A-Za-z0-9_./-]*/${name}#data/${name}#g" "$JMX"
         done
@@ -85,14 +90,13 @@ pipeline {
       steps {
         sh '''
         set -eu
-        JMX=$(cat latest_jmx.txt)
         RUN_DIR=$(cat run_dir.txt)
 
         ${JMETER_HOME}/jmeter -n \
-          -t "$JMX" \
-          -l "$RUN_DIR/results.jtl" \
-          -j "$RUN_DIR/jmeter.log" \
-          -e -o "$RUN_DIR/html"
+          -t "${RUN_DIR}/testplan.jmx" \
+          -l "${RUN_DIR}/results.jtl" \
+          -j "${RUN_DIR}/jmeter.log" \
+          -e -o "${RUN_DIR}/html"
         '''
       }
     }
